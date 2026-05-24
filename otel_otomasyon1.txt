@@ -1,0 +1,449 @@
+import sqlite3
+import pandas as pd
+from datetime import datetime, timedelta
+import streamlit as st
+import os
+import base64
+
+# --- SAYFA YAPILANDIRMASI ---
+st.set_page_config(page_title="BARANLAR HOTEL | MODERN MANAGEMENT", layout="wide", initial_sidebar_state="expanded")
+
+# --- TÜRKÇE BÜYÜK HARF ÇEVİRİCİ FONKSİYON ---
+def buyuk_harf_turkce(metin):
+    if not metin or pd.isna(metin): return ""
+    metin = str(metin).replace('i', 'İ').replace('ı', 'I').replace('ş', 'Ş').replace('ç', 'Ç').replace('ğ', 'Ğ').replace('ü', 'Ü').replace('ö', 'Ö')
+    return metin.upper().strip()
+
+# --- GECE SAYISI HESAPLAMA FONKSİYONU ---
+def gece_sayisi_hesapla(giris_tarihi_str):
+    try:
+        giris_tarihi = datetime.strptime(giris_tarihi_str, "%Y-%m-%d").date()
+        bugun = datetime.now().date()
+        gece = (bugun - giris_tarihi).days
+        return max(1, gece) 
+    except:
+        return 1
+
+# --- MODERLEŞTİRİLMİŞ & DAHA SIKIŞTIRILMIŞ CSS TASARIMI ---
+st.markdown("""
+    <style>
+        html, body, [data-testid="stAppViewContainer"] {
+            background-color: #f8fafc !important;
+            font-family: 'Inter', 'Segoe UI', sans-serif;
+        }
+        .block-container {
+            padding-top: 0.5rem !important;
+            padding-bottom: 0.5rem !important;
+            max-width: 95% !important;
+        }
+        .header-banner {
+            background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
+            padding: 12px 20px;
+            border-radius: 10px;
+            color: white;
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+            box-shadow: 0 4px 15px rgba(15, 23, 42, 0.08);
+        }
+        .header-logo {
+            width: 50px; height: 50px;
+            background: white;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            margin-right: 15px;
+            border: 2px solid #2563eb;
+            overflow: hidden;
+        }
+        .metric-card {
+            background: white;
+            border-radius: 8px;
+            padding: 10px;
+            text-align: center;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.01);
+            border-top: 4px solid #cbd5e1;
+        }
+        div[data-testid="stForm"] {
+            max-width: 750px !important;
+            margin: 0 auto !important;
+            background: white !important;
+            padding: 15px 20px !important;
+            border-radius: 10px !important;
+            border: 1px solid #e2e8f0 !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.02) !important;
+        }
+        .stTextInput input, .stSelectbox div[data-baseweb="select"], .stNumberInput input, .stDateInput input {
+            border-radius: 6px !important;
+            border: 1px solid #cbd5e1 !important;
+            padding: 4px 8px !important;
+            font-size: 13.5px !important;
+            background-color: #fdfdfd !important;
+            height: 34px !important;
+        }
+        div[data-testid="stForm"] button {
+            background: linear-gradient(90deg, #1e3a8a 0%, #2563eb 100%) !important;
+            color: white !important;
+            font-weight: 600 !important;
+            border: none !important;
+            padding: 6px !important;
+            border-radius: 6px !important;
+            height: 36px !important;
+        }
+        .room-box {
+            border-radius: 8px;
+            padding: 10px;
+            height: 85px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            border: 1px solid rgba(0,0,0,0.04);
+        }
+        [data-testid="stSidebar"] { background-color: #0f172a !important; }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- BASE64 LOGO GÖRÜNTÜLEME ---
+def get_logo_html():
+    logo_adlari = ["logo.png.jpg", "logo.png", "logo.jpg"]
+    for b_ad in logo_adlari:
+        if os.path.exists(b_ad):
+            with open(b_ad, "rb") as f:
+                data = base64.b64encode(f.read()).decode()
+                return f'<img src="data:image/jpeg;base64,{data}" style="width:100%; height:100%; object-fit:cover;">'
+    return '<span style="font-size:20px; font-weight:bold; color:#1e3a8a;">B</span>'
+
+# --- VERİ TABANI ---
+DB_NAME = "baranlar_otel.db"
+def veri_tabani_kur():
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute('CREATE TABLE IF NOT EXISTS Tbl_Odalar (OdaNo TEXT PRIMARY KEY, OdaTipi TEXT, Fiyat REAL, Durum TEXT DEFAULT "Boş")')
+        cursor.execute('CREATE TABLE IF NOT EXISTS Tbl_Kasa (ID INTEGER PRIMARY KEY AUTOINCREMENT, IslemTipi TEXT, Kategori TEXT, Tutar REAL, OdemeYontemi TEXT, Aciklama TEXT, Tarih TEXT)')
+        cursor.execute('CREATE TABLE IF NOT EXISTS Tbl_Hareketler (ID INTEGER PRIMARY KEY AUTOINCREMENT, OdaNo TEXT, MusteriAdSoyad TEXT, KimlikNo TEXT, Ulke TEXT, DogumTarihi TEXT, GirisTarihi TEXT, GirisSaati TEXT, CikisTarihi TEXT, ToplamTutar REAL, OdenenTutar REAL, KalanBorc REAL, Durum TEXT, GunlukFiyat REAL, AcikTarih INTEGER)')
+        cursor.execute('CREATE TABLE IF NOT EXISTS Tbl_Personel (ID INTEGER PRIMARY KEY AUTOINCREMENT, AdSoyad TEXT, Gorev TEXT, NetMaas REAL, MaasGunu INTEGER)')
+        cursor.execute('CREATE TABLE IF NOT EXISTS Tbl_PersonelHareketleri (ID INTEGER PRIMARY KEY AUTOINCREMENT, PersonelID INTEGER, IslemTuru TEXT, Tutar REAL, Aciklama TEXT, Tarih TEXT)')
+        conn.commit()
+veri_tabani_kur()
+
+def db_sorgu(q, p=()):
+    with sqlite3.connect(DB_NAME) as conn: return pd.read_sql_query(q, conn, params=p)
+def db_komut(q, p=()):
+    with sqlite3.connect(DB_NAME) as conn: cursor = conn.cursor(); cursor.execute(q, p); conn.commit()
+
+# --- ODALARI OLUŞTURMA ---
+try:
+    if db_sorgu("SELECT COUNT(*) as c FROM Tbl_Odalar").iloc[0]['c'] == 0:
+        odalar = [
+            ("105", "Standart", 3000), ("107", "Standart", 1500), ("108", "Standart", 1500), ("109", "Standart", 2500), 
+            ("201", "Standart", 1500), ("202", "Standart", 2500), ("203", "Standart", 2500), ("204", "Standart", 1500),
+            ("205", "Standart", 3000), ("207", "Standart", 1500), ("208", "Standart", 1500), ("209", "Standart", 2500),
+            ("301", "Standart", 1500), ("302", "Standart", 2500), ("303", "Standart", 2500), ("304", "Standart", 1500),
+            ("305", "Standart", 3000), ("307", "Standart", 1500), ("308", "Standart", 1500), ("309", "Standart", 2500),
+            ("401", "Standart", 1500), ("402", "Standart", 2500), ("403", "Standart", 2500), ("404", "Standart", 1500),
+            ("405", "Standart", 2500), ("407", "Standart", 1500), ("408", "Standart", 1500), ("409", "Standart", 2500),
+        ]
+        for n,t,f in odalar: db_komut("INSERT INTO Tbl_Odalar VALUES (?,?,?,'Boş')", (n,t,f))
+except: pass
+
+# --- MENÜ NAVİGASYON ---
+st.sidebar.markdown("<h2 style='color:white; text-align:center; font-size:16px; margin-bottom:20px;'>💎 BARANLAR PANEL</h2>", unsafe_allow_html=True)
+menu = ["ODA DURUM PANELİ", "GİRİŞ / ÇIKIŞ İŞLEMLERİ", "TAHSİLAT & BORÇ TAKİBİ", "KASA YÖNETİMİ", "PERSONEL & MAAŞ"]
+if 'sayfa' not in st.session_state: st.session_state.sayfa = menu[0]
+for m in menu:
+    if st.sidebar.button(m, use_container_width=True): st.session_state.sayfa = m; st.rerun()
+
+# ==========================================
+# SAYFA 1: ODA DURUM PANELİ
+# ==========================================
+if st.session_state.sayfa == "ODA DURUM PANELİ":
+    st.markdown(f'<div class="header-banner"><div class="header-logo">{get_logo_html()}</div><div><h1 style="margin:0; font-size:22px; letter-spacing:0.5px;">BARANLAR HOTEL</h1><p style="margin:0; opacity:0.7; font-size:12px;">YÖNETİM VE OTOMASYON KONSOLU</p></div></div>', unsafe_allow_html=True)
+    
+    df_s = db_sorgu("SELECT Durum, COUNT(*) as c FROM Tbl_Odalar GROUP BY Durum")
+    s_d = {"Dolu":0, "Boş":0, "Kirli":0, "Tadilat":0}
+    for _,r in df_s.iterrows(): s_d[r['Durum']] = r['c']
+    
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(f'<div class="metric-card" style="border-top-color:#ef4444;"><div style="font-size:11px; color:#64748b; font-weight:700;">🔴 DOLU</div><div style="font-size:22px; font-weight:800; color:#1e293b;">{s_d["Dolu"]}</div></div>', unsafe_allow_html=True)
+    c2.markdown(f'<div class="metric-card" style="border-top-color:#10b981;"><div style="font-size:11px; color:#64748b; font-weight:700;">🟢 MÜSAİT</div><div style="font-size:22px; font-weight:800; color:#1e293b;">{s_d["Boş"]}</div></div>', unsafe_allow_html=True)
+    c3.markdown(f'<div class="metric-card" style="border-top-color:#f59e0b;"><div style="font-size:11px; color:#64748b; font-weight:700;">🟡 KİRLİ</div><div style="font-size:22px; font-weight:800; color:#1e293b;">{s_d["Kirli"]}</div></div>', unsafe_allow_html=True)
+    c4.markdown(f'<div class="metric-card" style="border-top-color:#6366f1;"><div style="font-size:11px; color:#64748b; font-weight:700;">🛠️ BAKIM</div><div style="font-size:22px; font-weight:800; color:#1e293b;">{s_d["Tadilat"]}</div></div>', unsafe_allow_html=True)
+    
+    with st.expander("🛠️ Hızlı Oda Durumu Değiştir", expanded=False):
+        with st.form("hizli_durum_form"):
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                tüm_odalar = db_sorgu("SELECT OdaNo FROM Tbl_Odalar ORDER BY OdaNo")
+                secilen_oda = st.selectbox("Oda No", tüm_odalar['OdaNo'])
+            with cc2:
+                yeni_durum = st.selectbox("Yeni Durum", ["Boş", "Kirli", "Tadilat"], format_func=lambda x: "Temiz (Boş)" if x=="Boş" else x)
+            if st.form_submit_button("🔄 Güncelle", use_container_width=True):
+                db_komut("UPDATE Tbl_Odalar SET Durum=? WHERE OdaNo=?", (yeni_durum, secilen_oda))
+                st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    df_o = db_sorgu("SELECT * FROM Tbl_Odalar")
+    
+    for k in ["1", "2", "3", "4"]:
+        st.markdown(f"<h6 style='color:#1e3a8a; border-left:3px solid #2563eb; padding-left:8px; margin: 12px 0 8px 0; font-weight:700;'>🏢 {k}. KAT</h6>", unsafe_allow_html=True)
+        cols = st.columns(6)
+        kat_odalar = df_o[df_o['OdaNo'].str.startswith(k)]
+        for i, r in kat_odalar.reset_index().iterrows():
+            with cols[i % 6]:
+                color, text, sub = "#f8fafc", "BOŞ", "MÜSAİT"
+                if r['Durum'] == "Dolu":
+                    color, text = "#fef2f2", "DOLU"
+                    h = db_sorgu("SELECT MusteriAdSoyad FROM Tbl_Hareketler WHERE OdaNo=? AND Durum='Aktif'", (r['OdaNo'],))
+                    sub = h.iloc[0]['MusteriAdSoyad'] if not h.empty else "DOLU"
+                elif r['Durum'] == "Kirli": color, text, sub = "#fffbeb", "KİRLİ", "TEMİZLİK"
+                elif r['Durum'] == "Tadilat": color, text, sub = "#f1f5f9", "BAKIM", "ARIZALI"
+                
+                st.markdown(f'<div class="room-box" style="background:{color}; border-top: 3px solid {"#ef4444" if text=="DOLU" else "#10b981" if text=="BOŞ" else "#f59e0b" if text=="KİRLİ" else "#6366f1"};"><div><div style="font-size:10px; font-weight:700; color:#64748b;">{text}</div><div style="font-size:15px; font-weight:800; color:#1e293b;">Oda {r["OdaNo"]}</div></div><div style="font-size:11px; color:#475569; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{sub}</div></div>', unsafe_allow_html=True)
+
+# ==========================================
+# SAYFA 2: GİRİŞ / ÇIKIŞ İŞLEMLERİ
+# ==========================================
+elif st.session_state.sayfa == "GİRİŞ / ÇIKIŞ İŞLEMLERİ":
+    t1, t2 = st.tabs(["📥 YENİ GİRİŞ (CHECK-IN)", "📤 ÇIKIŞ YAP (CHECK-OUT)"])
+    
+    with t1:
+        df_b = db_sorgu("SELECT OdaNo, Fiyat FROM Tbl_Odalar WHERE Durum='Boş'")
+        with st.form("modern_checkin_grid"):
+            st.markdown("##### 📥 Müşteri Giriş Kaydı (Otomatik Hesaplama Aktif)")
+            
+            c_in1, c_in2 = st.columns(2)
+            with c_in1: o = st.selectbox("🚪 Oda Seçin", df_b['OdaNo'])
+            with c_in2: acik_tarih = st.checkbox("❓ Çıkış Tarihi Belirsiz")
+            
+            c_in3, c_in4 = st.columns(2)
+            with c_in3: ad = st.text_input("👤 Müşteri Adı Soyadı")
+            with c_in4: tc = st.text_input("🆔 TC / Kimlik No")
+            
+            c_in5, c_in6 = st.columns(2)
+            with c_in5: ulke = st.text_input("🌐 Ülke", value="Türkiye")
+            with c_in6: DT = st.date_input("🎂 Doğum Tarihi", value=datetime(1990, 1, 1))
+            
+            c_in7, c_in8 = st.columns(2)
+            with c_in7: gt = st.date_input("📅 Giriş Tarihi")
+            with c_in8: gs = st.text_input("🕒 Giriş Saati", value=datetime.now().strftime("%H:%M"))
+                
+            c_in9, c_in10 = st.columns(2)
+            with c_in9: ct = st.date_input("📅 Planlanan Çıkış Tarihi", value=datetime.now()+timedelta(days=1), disabled=acik_tarih)
+            
+            varsayilan_fiyat = float(df_b[df_b['OdaNo']==o]['Fiyat'].values[0]) if not df_b.empty else 1500.0
+            with c_in10: gunluk_fiyat = st.number_input("💰 Günlük Oda Fiyatı (TL)", min_value=0.0, value=varsayilan_fiyat)
+            
+            c_in11, c_in12 = st.columns(2)
+            with c_in11: pes = st.number_input("💵 Girişte Alınan Peşinat (TL)", min_value=0.0)
+            with c_in12: yon = st.selectbox("💳 Ödeme Kanalı", ["Nakit", "Kredi Kartı", "Havale"])
+                
+            if st.form_submit_button("📥 Giriş Kaydını Tamamla", use_container_width=True):
+                if not ad: st.error("Ad alanı boş geçilemez!")
+                else:
+                    ad, tc, ulke = buyuk_harf_turkce(ad), buyuk_harf_turkce(tc), buyuk_harf_turkce(ulke)
+                    tarih_str = str(gt)
+                    gece = gece_sayisi_hesapla(tarih_str)
+                    
+                    hesaplanan_toplam = gece * gunluk_fiyat
+                    kalan_borc = hesaplanan_toplam - pes
+                    
+                    db_komut("""INSERT INTO Tbl_Hareketler 
+                             (OdaNo, MusteriAdSoyad, KimlikNo, Ulke, DogumTarihi, GirisTarihi, GirisSaati, CikisTarihi, ToplamTutar, OdenenTutar, KalanBorc, Durum, GunlukFiyat, AcikTarih) 
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,'Aktif',?,?)""", 
+                             (o, ad, tc, ulke, str(DT), tarih_str, gs, str(ct) if not acik_tarih else "AÇIK", hesaplanan_toplam, pes, kalan_borc, gunluk_fiyat, 1 if acik_tarih else 0))
+                    
+                    db_komut("UPDATE Tbl_Odalar SET Durum='Dolu' WHERE OdaNo=?", (o,))
+                    if pes > 0: 
+                        db_komut("INSERT INTO Tbl_Kasa (IslemTipi, Kategori, Tutar, OdemeYontemi, Aciklama, Tarih) VALUES ('Gelir', 'ODA GELİRİ', ?, ?, ?, ?)", (pes, yon, f"ODA {o} GİRİŞ PEŞİNATI - {ad}", tarih_str))
+                    st.success(f"{o} Numaralı Oda Girişi Yapıldı."); st.rerun()
+
+    with t2:
+        df_d = db_sorgu("SELECT OdaNo FROM Tbl_Odalar WHERE Durum='Dolu'")
+        with st.form("modern_checkout_compact"):
+            st.markdown("##### 📤 Müşteri Çıkış / Hesap Kapatma")
+            o = st.selectbox("🚪 Çıkış Yapacak Oda", df_d['OdaNo'])
+            
+            h = db_sorgu("SELECT * FROM Tbl_Hareketler WHERE OdaNo=? AND Durum='Aktif'", (o,))
+            if not h.empty:
+                r = h.iloc[0]
+                gece = gece_sayisi_hesapla(r['GirisTarihi'])
+                
+                # [EMNİYET KEMERİ]: Eski kayıtlarda GunlukFiyat None ise hata vermemesi için koruma sağlandı
+                g_fiyat = float(r['GunlukFiyat']) if (r['GunlukFiyat'] is not None and pd.notna(r['GunlukFiyat'])) else 1500.0
+                t_tutar = float(r['ToplamTutar']) if (r['ToplamTutar'] is not None and pd.notna(r['ToplamTutar'])) else 0.0
+                
+                guncel_toplam = t_tutar if t_tutar > (g_fiyat * 1) else (gece * g_fiyat)
+                guncel_kalan = guncel_toplam - (float(r['OdenenTutar']) if pd.notna(r['OdenenTutar']) else 0.0)
+                
+                st.warning(f"📋 Misafir: {r['MusteriAdSoyad']} | Geçen Gece: {gece} | Güncel Borç: {guncel_kalan:,.2f} TL")
+                
+                cc1, cc2 = st.columns(2)
+                with cc1: tah = st.number_input("💵 Alınan Çıkış Ödemesi (TL)", value=float(max(0.0, guncel_kalan)))
+                with cc2: yon = st.selectbox("💳 Ödeme Kanalları", ["Nakit", "Kredi Kartı", "Havale"])
+                
+                if st.form_submit_button("📤 Bakiyeyi Kapat ve Çıkışı Onayla", use_container_width=True):
+                    db_komut("UPDATE Tbl_Hareketler SET ToplamTutar=?, OdenenTutar=OdenenTutar+?, KalanBorc=0, Durum='Tamamlandı' WHERE ID=?", (guncel_toplam, tah, r['ID']))
+                    db_komut("UPDATE Tbl_Odalar SET Durum='Kirli' WHERE OdaNo=?", (o,))
+                    if tah > 0: 
+                        db_komut("INSERT INTO Tbl_Kasa (IslemTipi, Kategori, Tutar, OdemeYontemi, Aciklama, Tarih) VALUES ('Gelir', 'ODA GELİRİ', ?, ?, ?, ?)", (tah, yon, f"ODA {o} CHECK-OUT TAHSİLAT - {r['MusteriAdSoyad']}", datetime.now().strftime("%Y-%m-%d")))
+                    st.success("Çıkış yapıldı."); st.rerun()
+
+# ==========================================
+# SAYFA 3: TAHSİLAT & BORÇ TAKİBİ
+# ==========================================
+elif st.session_state.sayfa == "TAHSİLAT & BORÇ TAKİBİ":
+    st.markdown("### 💳 Ara Tahsilat ve Hesap Düzenleme Ekranı")
+    
+    df_aktifler = db_sorgu("SELECT ID, OdaNo, MusteriAdSoyad, GirisTarihi, GunlukFiyat, ToplamTutar, OdenenTutar, KalanBorc FROM Tbl_Hareketler WHERE Durum='Aktif'")
+    
+    if df_aktifler.empty:
+        st.success("🎉 Şu an otelde konaklayan aktif misafir bulunmuyor.")
+    else:
+        for idx, row in df_aktifler.iterrows():
+            gece = gece_sayisi_hesapla(row['GirisTarihi'])
+            # [EMNİYET KEMERİ]: Burada da None değer koruması uygulandı
+            g_fiyat = float(row['GunlukFiyat']) if (row['GunlukFiyat'] is not None and pd.notna(row['GunlukFiyat'])) else 1500.0
+            t_tutar = float(row['ToplamTutar']) if (row['ToplamTutar'] is not None and pd.notna(row['ToplamTutar'])) else 0.0
+            o_tutar = float(row['OdenenTutar']) if pd.notna(row['OdenenTutar']) else 0.0
+            
+            if t_tutar <= (g_fiyat * 1):
+                df_aktifler.at[idx, 'ToplamTutar'] = gece * g_fiyat
+            df_aktifler.at[idx, 'KalanBorc'] = df_aktifler.at[idx, 'ToplamTutar'] - o_tutar
+            
+        with st.form("ara_tahsilat_form"):
+            st.markdown("##### 💵 Ara Ödeme (Tahsilat) Girişi")
+            c_b1, c_b2, c_b3 = st.columns(3)
+            with c_b1: secilen_b = st.selectbox("Misafir / Oda", df_aktifler['ID'], format_func=lambda x: f"Oda {df_aktifler[df_aktifler['ID']==x]['OdaNo'].values[0]} - {df_aktifler[df_aktifler['ID']==x]['MusteriAdSoyad'].values[0]}")
+            with c_b2: tah_tutar = st.number_input("Alınan Tutar (TL)", min_value=0.0, step=100.0)
+            with c_b3: tah_yon = st.selectbox("Ödeme Türü", ["Nakit", "Kredi Kartı", "Havale"])
+                
+            if st.form_submit_button("⚡ Ara Ödemeyi Kaydet", use_container_width=True):
+                satir = df_aktifler[df_aktifler['ID'] == secilen_b].iloc[0]
+                yeni_kalan = satir['KalanBorc'] - tah_tutar
+                db_komut("UPDATE Tbl_Hareketler SET ToplamTutar=?, OdenenTutar = OdenenTutar + ?, KalanBorc = ? WHERE ID = ?", (satir['ToplamTutar'], tah_tutar, yeni_kalan, secilen_b))
+                db_komut("INSERT INTO Tbl_Kasa (IslemTipi, Kategori, Tutar, OdemeYontemi, Aciklama, Tarih) VALUES ('Gelir', 'ODA GELİRİ', ?, ?, ?, ?)", (tah_tutar, tah_yon, f"ODA {satir['OdaNo']} ARA TAHSİLAT - {satir['MusteriAdSoyad']}", datetime.now().strftime("%Y-%m-%d")))
+                st.success("Tahsilat girildi."); st.rerun()
+
+        with st.expander("🛠️ ⚙️ Otomatik Fiyatı Değiştir / Ekstra Harcama Ekle (Manuel Müdahale)", expanded=False):
+            with st.form("manuel_duzenleme_form"):
+                st.info("Sistemin otomatik hesapladığı toplam konaklama tutarını buradan elinizle ezebilir, ekstra harcama ekleyebilirsiniz.")
+                c_d1, c_d2 = st.columns(2)
+                with c_d1: secilen_d = st.selectbox("Düzenlenecek Oda / Misafir", df_aktifler['ID'], key="duzenle_sec", format_func=lambda x: f"Oda {df_aktifler[df_aktifler['ID']==x]['OdaNo'].values[0]} - {df_aktifler[df_aktifler['ID']==x]['MusteriAdSoyad'].values[0]}")
+                satir_d = df_aktifler[df_aktifler['ID'] == secilen_d].iloc[0]
+                with c_d2: yeni_toplam_tutar = st.number_input("Yeni Toplam Konaklama Tutarı (TL)", min_value=0.0, value=float(satir_d['ToplamTutar']))
+                
+                if st.form_submit_button("💾 Toplam Tutarı Elle Güncelle ve Kilitle"):
+                    o_tutar_d = float(satir_d['OdenenTutar']) if pd.notna(satir_d['OdenenTutar']) else 0.0
+                    yeni_kalan_borc = yeni_toplam_tutar - o_tutar_d
+                    db_komut("UPDATE Tbl_Hareketler SET ToplamTutar=?, KalanBorc=? WHERE ID=?", (yeni_toplam_tutar, yeni_kalan_borc, secilen_d))
+                    st.success(f"Oda {satir_d['OdaNo']} toplam tutarı başarıyla {yeni_toplam_tutar} TL olarak güncellendi."); st.rerun()
+                
+        st.markdown("#### 📋 Güncel Aktif Durum ve Alacak Listesi")
+        st.dataframe(df_aktifler[['OdaNo', 'MusteriAdSoyad', 'GirisTarihi', 'GunlukFiyat', 'ToplamTutar', 'OdenenTutar', 'KalanBorc']], use_container_width=True)
+
+# ==========================================
+# SAYFA 4: KASA YÖNETİMİ & BARANLAR EXCEL YÜKLEME
+# ==========================================
+elif st.session_state.sayfa == "KASA YÖNETİMİ":
+    st.markdown("### 💰 Finansal Yönetim & Gelir-Gider")
+    ay = datetime.now().strftime("%Y-%m")
+    df_k = db_sorgu("SELECT * FROM Tbl_Kasa WHERE Tarih LIKE ?", (f"{ay}%",))
+    
+    gn = df_k[(df_k['IslemTipi']=='Gelir') & (df_k['OdemeYontemi']=='Nakit')]['Tutar'].sum()
+    gk = df_k[(df_k['IslemTipi']=='Gelir') & (df_k['OdemeYontemi']=='Kredi Kartı')]['Tutar'].sum()
+    giderler = df_k[df_k['IslemTipi']=='Gider']['Tutar'].sum()
+    
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(f'<div class="metric-card" style="border-top-color:#1e3a8a;"><div style="font-size:11px; color:#64748b; font-weight:700;">💵 NAKİT MEVCUT</div><div style="font-size:18px; font-weight:800;">{gn - df_k[(df_k["IslemTipi"]=="Gider") & (df_k["OdemeYontemi"]=="Nakit")]["Tutar"].sum():,.2f} TL</div></div>', unsafe_allow_html=True)
+    c2.markdown(f'<div class="metric-card" style="border-top-color:#10b981;"><div style="font-size:11px; color:#64748b; font-weight:700;">💳 KREDİ KARTI</div><div style="font-size:18px; font-weight:800;">{gk:,.2f} TL</div></div>', unsafe_allow_html=True)
+    c3.markdown(f'<div class="metric-card" style="border-top-color:#ef4444;"><div style="font-size:11px; color:#64748b; font-weight:700;">📉 AYLIK GİDER</div><div style="font-size:18px; font-weight:800;">{giderler:,.2f} TL</div></div>', unsafe_allow_html=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    with st.expander("📥 📊 Baranlar Muhasebe Excel/CSV Dosyasından Veri Yükle", expanded=False):
+        excel_file = st.file_uploader("Dosya Seçin", type=["xlsx", "csv"])
+        if excel_file is not None:
+            try:
+                df_excel = pd.read_csv(excel_file) if excel_file.name.endswith('.csv') else pd.read_excel(excel_file)
+                df_excel.columns = [c.lower().strip() for c in df_excel.columns]
+                gerekli_sutunlar = ['tur', 'tar', 'kat', 'tip', 'ack', 'tutar']
+                if all(s in df_excel.columns for s in gerekli_sutunlar):
+                    st.success("✅ Dosya uyumlu!")
+                    if st.button("🚀 Tüm Verileri Sisteme Aktar"):
+                        with sqlite3.connect(DB_NAME) as conn:
+                            for _, row in df_excel.iterrows():
+                                islem_yonu = "Gelir" if buyuk_harf_turkce(row['tur']) == "TAHSİLAT" else "Gider"
+                                conn.execute("INSERT INTO Tbl_Kasa (IslemTipi, Kategori, Tutar, OdemeYontemi, Aciklama, Tarih) VALUES (?,?,?,?,?,?)",
+                                             (islem_yonu, buyuk_harf_turkce(row['kat']), float(row['tutar']) if not pd.isna(row['tutar']) else 0.0, buyuk_harf_turkce(row['tip']) if not pd.isna(row['tip']) else "NAKİT", buyuk_harf_turkce(row['ack']), str(row['tar'])[:10]))
+                            conn.commit()
+                        st.success("Aktarıldı."); st.rerun()
+            except Exception as e: st.error(f"Hata: {e}")
+
+    with st.form("kasa_gelir_gider"):
+        st.markdown("##### ➕ Yeni Manuel İşlem Girişi")
+        rk1, rk2 = st.columns(2)
+        with rk1: tip = st.selectbox("İşlem Yönü", ["Gelir", "Gider"])
+        with rk2: kat = st.selectbox("Kategori", ["ODA GELİRİ", "MUTFAK", "PERSONEL ÖDEMESİ", "FATURA / GİDER", "DİĞER"])
+        rk3, rk4 = st.columns(2)
+        with rk3: tut = st.number_input("Tutar (TL)", min_value=0.0)
+        with rk4: yon = st.selectbox("Ödeme Kanalı", ["Nakit", "Kredi Kartı", "Havale"])
+        ack = st.text_input("Açıklama")
+        tar = st.date_input("İşlem Tarihi")
+        if st.form_submit_button("💾 Kaydet", use_container_width=True):
+            db_komut("INSERT INTO Tbl_Kasa (IslemTipi, Kategori, Tutar, OdemeYontemi, Aciklama, Tarih) VALUES (?,?,?,?,?,?)", (tip, kat, tut, yon, buyuk_harf_turkce(ack), str(tar)))
+            st.rerun()
+
+    st.dataframe(df_k.sort_values("ID", ascending=False), use_container_width=True)
+
+# ==========================================
+# SAYFA 5: PERSONEL & MAAŞ
+# ==========================================
+elif st.session_state.sayfa == "PERSONEL & MAAŞ":
+    st.markdown("### 👥 Personel Cari ve Ödemeleri")
+    
+    df_pl = db_sorgu("SELECT ID, AdSoyad FROM Tbl_Personel")
+    
+    with st.expander("➕ Yeni Personel Tanımla", expanded=False):
+        with st.form("hizli_p"):
+            p_ad = st.text_input("Personel Adı Soyadı")
+            if st.form_submit_button("💾 Personeli Sisteme Ekle", use_container_width=True):
+                if p_ad:
+                    db_komut("INSERT INTO Tbl_Personel (AdSoyad, Gorev, NetMaas) VALUES (?, 'Otel Personeli', 20000)", (buyuk_harf_turkce(p_ad),))
+                    st.success(f"{p_ad} eklendi."); st.rerun()
+
+    if not df_pl.empty:
+        with st.form("maas_avans_odeme_form"):
+            st.markdown("##### 💸 Ödeme Girişi (Maaş / Avans)")
+            row_p1, row_p2 = st.columns(2)
+            with row_p1: p_id = st.selectbox("Personel Seçin", df_pl['ID'], format_func=lambda x: df_pl[df_pl['ID']==x]['AdSoyad'].values[0])
+            with row_p2: tip_p = st.selectbox("İşlem Türü", ["AVANS ÖDEMESİ", "MAAŞ ÖDEMESİ"])
+                
+            row_p3, row_p4 = st.columns(2)
+            with row_p3: tut_p = st.number_input("Ödenen Tutar (TL)", min_value=0.0, step=500.0)
+            with row_p4: yon_p = st.selectbox("Ödeme Kanalı", ["Nakit", "Havale"])
+                
+            ack_p = st.text_input("Dönem / Açıklama Notu (Örn: Mayıs Avansı)")
+            
+            if st.form_submit_button("💸 Ödemeyi Onayla ve İşle", use_container_width=True):
+                p_ad = df_pl[df_pl['ID']==p_id]['AdSoyad'].values[0]
+                db_komut("INSERT INTO Tbl_PersonelHareketleri (PersonelID, IslemTuru, Tutar, Aciklama, Tarih) VALUES (?,?,?,?,?)", (p_id, tip_p, tut_p, buyuk_harf_turkce(ack_p), datetime.now().strftime("%Y-%m-%d")))
+                db_komut("INSERT INTO Tbl_Kasa (IslemTipi, Kategori, Tutar, OdemeYontemi, Aciklama, Tarih) VALUES ('Gider', 'PERSONEL ÖDEMESİ', ?, ?, ?, ?)", (tut_p, yon_p, f"{p_ad} - {tip_p} ({ack_p})", datetime.now().strftime("%Y-%m-%d")))
+                st.success(f"Ödeme kaydedildi."); st.rerun()
+
+        st.markdown("<br><h5 style='color:#1e3a8a; font-weight:700;'>📋 Personel Ne Almış / Ne Kadar Almış Listesi</h5>", unsafe_allow_html=True)
+        
+        df_p_hareket = db_sorgu("""
+            SELECT 
+                H.Tarih as [İşlem Tarihi],
+                P.AdSoyad as [Personel Adı Soyadı],
+                H.IslemTuru as [Ödeme Türü],
+                H.Tutar as [Alınan Tutar (TL)],
+                H.Aciklama as [Açıklama / Dönem]
+            FROM Tbl_PersonelHareketleri H
+            JOIN Tbl_Personel P ON H.PersonelID = P.ID
+            ORDER BY H.ID DESC
+        """)
+        
+        if df_p_hareket.empty:
+            st.info("Henüz sisteme işlenmiş bir personel ödeme kaydı bulunmuyor.")
+        else:
+            st.dataframe(df_p_hareket, use_container_width=True)
