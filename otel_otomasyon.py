@@ -322,6 +322,44 @@ elif st.session_state.sayfa == "GİRİŞ / ÇIKIŞ İŞLEMLERİ":
                         db_komut("INSERT INTO Tbl_Kasa (IslemTipi, Kategori, Tutar, OdemeYontemi, Aciklama, Tarih) VALUES ('Gelir', 'ODA GELİRİ', ?, ?, ?, ?)", (tah, yon, f"ODA {o} CHECK-OUT TAHSİLAT - {r['MusteriAdSoyad']}", datetime.now().strftime("%Y-%m-%d")))
                     st.success(f"{o} Numaralı oda boşaltıldı ve doğrudan 'Boş (Müsait)' durumuna alındı."); st.rerun()
 
+    # 🛠️ YENİ EKLEME: GİRİŞ / ÇIKIŞ SEKMELERİNİN ALTINDAKİ LİSTE
+    st.markdown("---")
+    st.markdown("#### 🏨 Otelde Konaklayan Güncel Misafir Listesi")
+    
+    df_aktif_liste = db_sorgu("""
+        SELECT 
+            OdaNo as [Oda No], 
+            MusteriAdSoyad as [Müşteri Ad Soyad], 
+            KimlikNo as [Kimlik / Pasaport No],
+            GirisTarihi as [Giriş Tarihi], 
+            GirisSaati as [Giriş Saati],
+            GunlukFiyat as [Günlük Fiyat (TL)],
+            ToplamTutar as [Toplam Tutar (TL)], 
+            OdenenTutar as [Ödenen Tutar (TL)], 
+            KalanBorc as [Kalan Borç (TL)] 
+        FROM Tbl_Hareketler 
+        WHERE Durum='Aktif' 
+        ORDER BY OdaNo ASC
+    """)
+    
+    if df_aktif_liste.empty:
+        st.info("ℹ️ Şu anda otelde konaklayan aktif misafir bulunmuyor.")
+    else:
+        # Dinamik olarak gece ve güncel kalan borç hesaplamalarını yansıt
+        for idx, row in df_aktif_liste.iterrows():
+            gece = gece_sayisi_hesapla(row['Giriş Tarihi'])
+            g_fiyat = float(row['Günlük Fiyat (TL)']) if pd.notna(row['Günlük Fiyat (TL)']) else 1500.0
+            t_tutar = float(row['Toplam Tutar (TL)']) if pd.notna(row['Toplam Tutar (TL)']) else 0.0
+            o_tutar = float(row['Ödenen Tutar (TL)']) if pd.notna(row['Ödenen Tutar (TL)']) else 0.0
+            
+            if t_tutar <= (g_fiyat * 1):
+                t_tutar = gece * g_fiyat
+                df_aktif_liste.at[idx, 'Toplam Tutar (TL)'] = t_tutar
+                
+            df_aktif_liste.at[idx, 'Kalan Borç (TL)'] = t_tutar - o_tutar
+            
+        st.dataframe(df_aktif_liste, use_container_width=True)
+
 # ==========================================
 # SAYFA 3: TAHSİLAT & BORÇ TAKİBİ
 # ==========================================
@@ -446,7 +484,6 @@ elif st.session_state.sayfa == "KASA YÖNETİMİ":
                                 i_kat = buyuk_harf_turkce(str(row['kat']))
                                 i_tutar = float(row['tutar']) if pd.notna(row['tutar']) else 0.0
                                 
-                                # Ödeme kanalı temizleme (Kredi Kartı eşleştirmesi)
                                 t_low = str(row['tip']).lower()
                                 if "kart" in t_low or "kredi" in t_low or "pos" in t_low:
                                     i_yon = "Kredi Kartı"
@@ -468,11 +505,9 @@ elif st.session_state.sayfa == "KASA YÖNETİMİ":
                 
     st.markdown("---")
 
-    # Mevcut Ay Verilerini ve Toplamları Çekme
     ay = datetime.now().strftime("%Y-%m")
     df_k = db_sorgu("SELECT * FROM Tbl_Kasa WHERE Tarih LIKE ?", (f"{ay}%",))
     
-    # 🛠️ GÜNCELLEME: Kredi Kartı Gider çıkarma mantığı eklendi
     gelir_nakit = df_k[(df_k['IslemTipi']=='Gelir') & (df_k['OdemeYontemi']=='Nakit')]['Tutar'].sum()
     gider_nakit = df_k[(df_k['IslemTipi']=='Gider') & (df_k['OdemeYontemi']=='Nakit')]['Tutar'].sum()
     
