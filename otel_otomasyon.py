@@ -392,15 +392,12 @@ elif st.session_state.sayfa == "TAHSİLAT & BORÇ TAKİBİ":
 elif st.session_state.sayfa == "KASA YÖNETİMİ":
     st.markdown("### 💰 Finansal Yönetim & Gelir-Gider")
     
-    # 🛠️ YENİ EKLEMELER: EXCEL / CSV VERİSİ YÜKLEME PANELİ
-    st.markdown("---")
-    with st.expander("📥 ESKİ AYLARA AİT KASA DOSYASI YÜKLE (TOPLU AKTARIM)", expanded=True):
+    with st.expander("📥 ESKİ AYLARA AİT KASA DOSYASI YÜKLE (TOPLU AKTARIM)", expanded=False):
         st.info("💡 Bilgisayarınızdaki geçmiş aylara ait kasa CSV veya Excel dosyasını buraya yükleyerek veritabanına tek seferde aktarabilirsiniz.")
         yuklenen_dosya = st.file_uploader("Geçmiş Kasa Dosyasını Seçin (.csv veya .xlsx)", type=["csv", "xlsx"])
         
         if yuklenen_dosya is not None:
             try:
-                # Dosya tipine göre oku
                 if yuklenen_dosya.name.endswith('.csv'):
                     df_yuklenen = pd.read_csv(yuklenen_dosya)
                 else:
@@ -409,13 +406,11 @@ elif st.session_state.sayfa == "KASA YÖNETİMİ":
                 st.write("📋 Yüklenen Dosyadan Örnek Kayıtlar (İlk 5 Satır):")
                 st.dataframe(df_yuklenen.head(), use_container_width=True)
                 
-                # Kolon eşleme ve hazırlık testi
                 gerekli_kolonlar = ['tur', 'kat', 'tutar', 'tip', 'ack', 'tar']
                 eksik_kolonlar = [k for k in gerekli_kolonlar if k not in df_yuklenen.columns]
                 
                 if eksik_kolonlar:
                     st.warning(f"Dosyadaki başlıklar standart dışı. Otomatik eşleme yapılıyor...")
-                    # Kullanıcı kolon isimleri farklıysa akıllıca eşleyelim
                     esleme = {}
                     for col in df_yuklenen.columns:
                         c_low = col.lower()
@@ -426,7 +421,7 @@ elif st.session_state.sayfa == "KASA YÖNETİMİ":
                         elif 'ack' in c_low or 'not' in c_low or 'detay' in c_low: esleme['ack'] = col
                         elif 'tar' in c_low: esleme['tar'] = col
                     
-                    if len(esleme) >= 4: # En kritik veriler varsa yeniden yapılandır
+                    if len(esleme) >= 4:
                         df_hazir = pd.DataFrame()
                         df_hazir['tur'] = df_yuklenen[esleme.get('tur', df_yuklenen.columns[0])]
                         df_hazir['kat'] = df_yuklenen[esleme.get('kat', df_yuklenen.columns[1])]
@@ -435,7 +430,7 @@ elif st.session_state.sayfa == "KASA YÖNETİMİ":
                         df_hazir['ack'] = df_yuklenen[esleme.get('ack', df_yuklenen.columns[4])] if 'ack' in esleme else "Eski Kayıt"
                         df_hazir['tar'] = df_yuklenen[esleme.get('tar', df_yuklenen.columns[5])] if 'tar' in esleme else datetime.now().strftime("%Y-%m-%d")
                     else:
-                        df_hazir = pd.DataFrame() # Hata durumuna düşür
+                        df_hazir = pd.DataFrame()
                 else:
                     df_hazir = df_yuklenen[gerekli_kolonlar].copy()
                 
@@ -447,13 +442,21 @@ elif st.session_state.sayfa == "KASA YÖNETİMİ":
                         with sqlite3.connect(DB_NAME) as conn:
                             cursor = conn.cursor()
                             for _, row in df_hazir.iterrows():
-                                # Tahsilat -> Gelir, Tediye -> Gider dönüşümü
                                 i_tipi = "Gelir" if str(row['tur']).lower() in ['tahsilat', 'gelir'] else "Gider"
                                 i_kat = buyuk_harf_turkce(str(row['kat']))
                                 i_tutar = float(row['tutar']) if pd.notna(row['tutar']) else 0.0
-                                i_yon = "Nakit" if "nakit" in str(row['tip']).lower() else ("Kredi Kartı" if "kart" in str(row['tip']).lower() else "Havale")
+                                
+                                # Ödeme kanalı temizleme (Kredi Kartı eşleştirmesi)
+                                t_low = str(row['tip']).lower()
+                                if "kart" in t_low or "kredi" in t_low or "pos" in t_low:
+                                    i_yon = "Kredi Kartı"
+                                elif "havale" in t_low or "eft" in t_low or "banka" in t_low:
+                                    i_yon = "Havale"
+                                else:
+                                    i_yon = "Nakit"
+                                    
                                 i_ack = buyuk_harf_turkce(str(row['ack']))
-                                i_tar = str(row['tar']).split(" ")[0] # Sadece YYYY-MM-DD kısmını al
+                                i_tar = str(row['tar']).split(" ")[0]
                                 
                                 cursor.execute("INSERT INTO Tbl_Kasa (IslemTipi, Kategori, Tutar, OdemeYontemi, Aciklama, Tarih) VALUES (?,?,?,?,?,?)",
                                                (i_tipi, i_kat, i_tutar, i_yon, i_ack, i_tar))
@@ -462,22 +465,27 @@ elif st.session_state.sayfa == "KASA YÖNETİMİ":
                         st.success(f"🎉 Başarılı! Toplam {sayac} adet geçmiş dönem kasa hareketi sisteme başarıyla yüklendi."); st.rerun()
             except Exception as ex:
                 st.error(f"Dosya işlenirken hata oluştu: {ex}")
+                
     st.markdown("---")
 
+    # Mevcut Ay Verilerini ve Toplamları Çekme
     ay = datetime.now().strftime("%Y-%m")
     df_k = db_sorgu("SELECT * FROM Tbl_Kasa WHERE Tarih LIKE ?", (f"{ay}%",))
     
-    gn = df_k[(df_k['IslemTipi']=='Gelir') & (df_k['OdemeYontemi']=='Nakit')]['Tutar'].sum()
-    gk = df_k[(df_k['IslemTipi']=='Gelir') & (df_k['OdemeYontemi']=='Kredi Kartı')]['Tutar'].sum()
+    # 🛠️ GÜNCELLEME: Kredi Kartı Gider çıkarma mantığı eklendi
+    gelir_nakit = df_k[(df_k['IslemTipi']=='Gelir') & (df_k['OdemeYontemi']=='Nakit')]['Tutar'].sum()
+    gider_nakit = df_k[(df_k['IslemTipi']=='Gider') & (df_k['OdemeYontemi']=='Nakit')]['Tutar'].sum()
+    
+    gelir_kart = df_k[(df_k['IslemTipi']=='Gelir') & (df_k['OdemeYontemi']=='Kredi Kartı')]['Tutar'].sum()
+    gider_kart = df_k[(df_k['IslemTipi']=='Gider') & (df_k['OdemeYontemi']=='Kredi Kartı')]['Tutar'].sum()
     
     c1, c2 = st.columns(2)
-    c1.markdown(f'<div class="metric-card" style="border-bottom: 4px solid #1e3a8a;"><div style="font-size:12px; color:#64748b; font-weight:700;">💵 NAKİT MEVCUT</div><div style="font-size:20px; font-weight:800;">{gn - df_k[(df_k["IslemTipi"]=="Gider") & (df_k["OdemeYontemi"]=="Nakit")]["Tutar"].sum():,.2f} TL</div></div>', unsafe_allow_html=True)
-    c2.markdown(f'<div class="metric-card" style="border-bottom: 4px solid #10b981;"><div style="font-size:12px; color:#64748b; font-weight:700;">💳 KREDİ KARTI</div><div style="font-size:20px; font-weight:800;">{gk:,.2f} TL</div></div>', unsafe_allow_html=True)
+    c1.markdown(f'<div class="metric-card" style="border-bottom: 4px solid #1e3a8a;"><div style="font-size:12px; color:#64748b; font-weight:700;">💵 NAKİT MEVCUT</div><div style="font-size:20px; font-weight:800;">{gelir_nakit - gider_nakit:,.2f} TL</div></div>', unsafe_allow_html=True)
+    c2.markdown(f'<div class="metric-card" style="border-bottom: 4px solid #10b981;"><div style="font-size:12px; color:#64748b; font-weight:700;">💳 KREDİ KARTI NET</div><div style="font-size:20px; font-weight:800;">{gelir_kart - gider_kart:,.2f} TL</div></div>', unsafe_allow_html=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
     
     st.markdown("##### 📥 Kasa Raporunu Excel Olarak İndir")
-    # CSV indirme (openpyxl motor bağımlılığını tamamen bitiren yedek sistem)
     if not df_k.empty:
         try:
             csv_data = df_k.to_csv(index=False).encode('utf-8-sig')
@@ -516,7 +524,6 @@ elif st.session_state.sayfa == "KASA YÖNETİMİ":
             db_komut("INSERT INTO Tbl_Kasa (IslemTipi, Kategori, Tutar, OdemeYontemi, Aciklama, Tarih) VALUES (?,?,?,?,?,?)", (tip, kat, tut, yon, buyuk_harf_turkce(ack), str(tar)))
             st.rerun()
 
-    # Genel kasa listesi (Bütün geçmişi görsün diye sıralıyoruz)
     df_tum_kasa = db_sorgu("SELECT * FROM Tbl_Kasa ORDER BY Tarih DESC, ID DESC")
     st.dataframe(df_tum_kasa, use_container_width=True)
 
