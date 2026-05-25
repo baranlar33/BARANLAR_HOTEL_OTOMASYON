@@ -211,7 +211,6 @@ if st.session_state.sayfa == "ODA DURUM PANELİ":
             if r['Durum'] == "Dolu":
                 css_sinifi = "room-dolu"
                 ust_yazi = "DOLU"
-                # 🛠️ GÜNCELLEME: Sadece en son girilen AKTİF müşteriyi çek (Tarih ve ID sırasına göre en yeni olanı)
                 h = db_sorgu("SELECT MusteriAdSoyad FROM Tbl_Hareketler WHERE OdaNo=? AND Durum='Aktif' ORDER BY ID DESC LIMIT 1", (r['OdaNo'],))
                 alt_yazi = h.iloc[0]['MusteriAdSoyad'] if not h.empty else "DOLU"
             elif r['Durum'] == "Kirli":
@@ -298,7 +297,6 @@ elif st.session_state.sayfa == "GİRİŞ / ÇIKIŞ İŞLEMLERİ":
             st.markdown("##### 📤 Müşteri Çıkış / Hesap Kapatma")
             o = st.selectbox("🚪 Çıkış Yapacak Oda", df_d['OdaNo'])
             
-            # 🛠️ GÜNCELLEME: Çıkışta da sadece AKTİF olan kaydı getir
             h = db_sorgu("SELECT * FROM Tbl_Hareketler WHERE OdaNo=? AND Durum='Aktif' ORDER BY ID DESC LIMIT 1", (o,))
             if not h.empty:
                 r = h.iloc[0]
@@ -393,6 +391,79 @@ elif st.session_state.sayfa == "TAHSİLAT & BORÇ TAKİBİ":
 # ==========================================
 elif st.session_state.sayfa == "KASA YÖNETİMİ":
     st.markdown("### 💰 Finansal Yönetim & Gelir-Gider")
+    
+    # 🛠️ YENİ EKLEMELER: EXCEL / CSV VERİSİ YÜKLEME PANELİ
+    st.markdown("---")
+    with st.expander("📥 ESKİ AYLARA AİT KASA DOSYASI YÜKLE (TOPLU AKTARIM)", expanded=True):
+        st.info("💡 Bilgisayarınızdaki geçmiş aylara ait kasa CSV veya Excel dosyasını buraya yükleyerek veritabanına tek seferde aktarabilirsiniz.")
+        yuklenen_dosya = st.file_uploader("Geçmiş Kasa Dosyasını Seçin (.csv veya .xlsx)", type=["csv", "xlsx"])
+        
+        if yuklenen_dosya is not None:
+            try:
+                # Dosya tipine göre oku
+                if yuklenen_dosya.name.endswith('.csv'):
+                    df_yuklenen = pd.read_csv(yuklenen_dosya)
+                else:
+                    df_yuklenen = pd.read_excel(yuklenen_dosya)
+                
+                st.write("📋 Yüklenen Dosyadan Örnek Kayıtlar (İlk 5 Satır):")
+                st.dataframe(df_yuklenen.head(), use_container_width=True)
+                
+                # Kolon eşleme ve hazırlık testi
+                gerekli_kolonlar = ['tur', 'kat', 'tutar', 'tip', 'ack', 'tar']
+                eksik_kolonlar = [k for k in gerekli_kolonlar if k not in df_yuklenen.columns]
+                
+                if eksik_kolonlar:
+                    st.warning(f"Dosyadaki başlıklar standart dışı. Otomatik eşleme yapılıyor...")
+                    # Kullanıcı kolon isimleri farklıysa akıllıca eşleyelim
+                    esleme = {}
+                    for col in df_yuklenen.columns:
+                        c_low = col.lower()
+                        if 'tur' in c_low or 'yön' in c_low or 'islem' in c_low: esleme['tur'] = col
+                        elif 'kat' in c_low: esleme['kat'] = col
+                        elif 'tut' in c_low: esleme['tutar'] = col
+                        elif 'tip' in c_low or 'kanal' in c_low or 'yontem' in c_low: esleme['tip'] = col
+                        elif 'ack' in c_low or 'not' in c_low or 'detay' in c_low: esleme['ack'] = col
+                        elif 'tar' in c_low: esleme['tar'] = col
+                    
+                    if len(esleme) >= 4: # En kritik veriler varsa yeniden yapılandır
+                        df_hazir = pd.DataFrame()
+                        df_hazir['tur'] = df_yuklenen[esleme.get('tur', df_yuklenen.columns[0])]
+                        df_hazir['kat'] = df_yuklenen[esleme.get('kat', df_yuklenen.columns[1])]
+                        df_hazir['tutar'] = df_yuklenen[esleme.get('tutar', df_yuklenen.columns[2])]
+                        df_hazir['tip'] = df_yuklenen[esleme.get('tip', df_yuklenen.columns[3])]
+                        df_hazir['ack'] = df_yuklenen[esleme.get('ack', df_yuklenen.columns[4])] if 'ack' in esleme else "Eski Kayıt"
+                        df_hazir['tar'] = df_yuklenen[esleme.get('tar', df_yuklenen.columns[5])] if 'tar' in esleme else datetime.now().strftime("%Y-%m-%d")
+                    else:
+                        df_hazir = pd.DataFrame() # Hata durumuna düşür
+                else:
+                    df_hazir = df_yuklenen[gerekli_kolonlar].copy()
+                
+                if df_hazir.empty:
+                    st.error("Dosya yapısı çözülemedi! Lütfen başlıkların 'tur', 'kat', 'tutar', 'tip', 'ack', 'tar' içerdiğinden emin olun.")
+                else:
+                    if st.button("🚀 Verileri Veritabanına Aktarımı Başlat", use_container_width=True):
+                        sayac = 0
+                        with sqlite3.connect(DB_NAME) as conn:
+                            cursor = conn.cursor()
+                            for _, row in df_hazir.iterrows():
+                                # Tahsilat -> Gelir, Tediye -> Gider dönüşümü
+                                i_tipi = "Gelir" if str(row['tur']).lower() in ['tahsilat', 'gelir'] else "Gider"
+                                i_kat = buyuk_harf_turkce(str(row['kat']))
+                                i_tutar = float(row['tutar']) if pd.notna(row['tutar']) else 0.0
+                                i_yon = "Nakit" if "nakit" in str(row['tip']).lower() else ("Kredi Kartı" if "kart" in str(row['tip']).lower() else "Havale")
+                                i_ack = buyuk_harf_turkce(str(row['ack']))
+                                i_tar = str(row['tar']).split(" ")[0] # Sadece YYYY-MM-DD kısmını al
+                                
+                                cursor.execute("INSERT INTO Tbl_Kasa (IslemTipi, Kategori, Tutar, OdemeYontemi, Aciklama, Tarih) VALUES (?,?,?,?,?,?)",
+                                               (i_tipi, i_kat, i_tutar, i_yon, i_ack, i_tar))
+                                sayac += 1
+                            conn.commit()
+                        st.success(f"🎉 Başarılı! Toplam {sayac} adet geçmiş dönem kasa hareketi sisteme başarıyla yüklendi."); st.rerun()
+            except Exception as ex:
+                st.error(f"Dosya işlenirken hata oluştu: {ex}")
+    st.markdown("---")
+
     ay = datetime.now().strftime("%Y-%m")
     df_k = db_sorgu("SELECT * FROM Tbl_Kasa WHERE Tarih LIKE ?", (f"{ay}%",))
     
@@ -405,24 +476,20 @@ elif st.session_state.sayfa == "KASA YÖNETİMİ":
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # 🛠️ GÜNCELLEME: Excel'e aktarma ve indirme butonu eklendi (Hata vermemesi için motor ayarlandı)
     st.markdown("##### 📥 Kasa Raporunu Excel Olarak İndir")
+    # CSV indirme (openpyxl motor bağımlılığını tamamen bitiren yedek sistem)
     if not df_k.empty:
         try:
-            import io
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_k.to_excel(writer, index=False, sheet_name='Kasa_Raporu')
-            buffer.seek(0)
+            csv_data = df_k.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
-                label="📥 Excel Dosyasını Bilgisayara Yükle",
-                data=buffer,
-                file_name=f"kasa_raporu_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                label="📥 Kasa Verilerini Bilgisayara İndir (Güvenli Mod - CSV)",
+                data=csv_data,
+                file_name=f"kasa_raporu_{datetime.now().strftime('%Y-%m-%d')}.csv",
+                mime="text/csv",
                 use_container_width=True
             )
         except Exception as e:
-            st.error(f"Excel motoru eksik veya hata verdi. Lütfen terminalden 'pip install openpyxl' komutunu çalıştırın. Hata: {e}")
+            st.error(f"İndirme hatası: {e}")
     else:
         st.info("Bu ay henüz kasada işlem bulunmuyor.")
 
@@ -449,7 +516,9 @@ elif st.session_state.sayfa == "KASA YÖNETİMİ":
             db_komut("INSERT INTO Tbl_Kasa (IslemTipi, Kategori, Tutar, OdemeYontemi, Aciklama, Tarih) VALUES (?,?,?,?,?,?)", (tip, kat, tut, yon, buyuk_harf_turkce(ack), str(tar)))
             st.rerun()
 
-    st.dataframe(df_k.sort_values("ID", ascending=False), use_container_width=True)
+    # Genel kasa listesi (Bütün geçmişi görsün diye sıralıyoruz)
+    df_tum_kasa = db_sorgu("SELECT * FROM Tbl_Kasa ORDER BY Tarih DESC, ID DESC")
+    st.dataframe(df_tum_kasa, use_container_width=True)
 
 # ==========================================
 # SAYFA 5: PERSONEL & MAAŞ
@@ -466,15 +535,7 @@ elif st.session_state.sayfa == "PERSONEL & MAAŞ":
         except: pass
         try: db_komut("ALTER TABLE Tbl_Personel ADD COLUMN CikisTarihi TEXT DEFAULT 'DEVAM EDİYOR'")
         except: pass
-        
-        try:
-            df_pl = db_sorgu("SELECT ID, AdSoyad, Gorev, CalismaTuru, GirisTarihi, CikisTarihi, NetMaas FROM Tbl_Personel")
-        except:
-            df_gecici = db_sorgu("SELECT ID, AdSoyad, Gorev, NetMaas FROM Tbl_Personel")
-            df_gecici["CalismaTuru"] = "AYLIK ÇALIŞAN"
-            df_gecici["GirisTarihi"] = "BİLİNMİYOR"
-            df_gecici["CikisTarihi"] = "DEVAM EDİYOR"
-            df_pl = df_gecici[["ID", "AdSoyad", "Gorev", "CalismaTuru", "GirisTarihi", "CikisTarihi", "NetMaas"]]
+        df_pl = db_sorgu("SELECT ID, AdSoyad, Gorev, CalismaTuru, GirisTarihi, CikisTarihi, NetMaas FROM Tbl_Personel")
     
     with st.expander("➕ Yeni Personel Tanımla", expanded=False):
         with st.form("hizli_p"):
@@ -495,13 +556,10 @@ elif st.session_state.sayfa == "PERSONEL & MAAŞ":
             with st.form("personel_duzenleme_form"):
                 st.info("💡 Bilgilerini veya giriş tarihini yanlış kaydettiğiniz personeli seçip buradan hızlıca düzenleyebilirsiniz.")
                 secilen_p_id = st.selectbox("Düzenlenecek Personel", df_pl['ID'], format_func=lambda x: df_pl[df_pl['ID']==x]['AdSoyad'].values[0])
-                
                 p_satir = df_pl[df_pl['ID'] == secilen_p_id].iloc[0]
                 
-                try:
-                    mevcut_giris_date = datetime.strptime(str(p_satir['GirisTarihi']), "%Y-%m-%d").date()
-                except:
-                    mevcut_giris_date = datetime.now().date()
+                try: mevcut_giris_date = datetime.strptime(str(p_satir['GirisTarihi']), "%Y-%m-%d").date()
+                except: mevcut_giris_date = datetime.now().date()
                 
                 c_pduz1, c_pduz2 = st.columns(2)
                 with c_pduz1: yeni_p_gorev = st.text_input("Yeni / Düzeltilmiş Görevi", value=str(p_satir['Gorev']))
@@ -512,9 +570,7 @@ elif st.session_state.sayfa == "PERSONEL & MAAŞ":
                 with c_pduz4: yeni_p_maas = st.number_input("Güncel Net Maaş (TL)", min_value=0.0, value=float(p_satir['NetMaas']))
                 
                 if st.form_submit_button("💾 Personel Kartını Güncelle", use_container_width=True):
-                    db_komut("""UPDATE Tbl_Personel 
-                             SET Gorev=?, GirisTarihi=?, CalismaTuru=?, NetMaas=? 
-                             WHERE ID=?""", 
+                    db_komut("UPDATE Tbl_Personel SET Gorev=?, GirisTarihi=?, CalismaTuru=?, NetMaas=? WHERE ID=?", 
                              (buyuk_harf_turkce(yeni_p_gorev), str(yeni_p_giris), yeni_p_tur, yeni_p_maas, secilen_p_id))
                     st.success(f"🎉 {p_satir['AdSoyad']} isimli personelin kart bilgileri güncellendi."); st.rerun()
 
