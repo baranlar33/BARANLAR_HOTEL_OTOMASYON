@@ -211,7 +211,8 @@ if st.session_state.sayfa == "ODA DURUM PANELİ":
             if r['Durum'] == "Dolu":
                 css_sinifi = "room-dolu"
                 ust_yazi = "DOLU"
-                h = db_sorgu("SELECT MusteriAdSoyad FROM Tbl_Hareketler WHERE OdaNo=? AND Durum='Aktif'", (r['OdaNo'],))
+                # 🛠️ GÜNCELLEME: Sadece en son girilen AKTİF müşteriyi çek (Tarih ve ID sırasına göre en yeni olanı)
+                h = db_sorgu("SELECT MusteriAdSoyad FROM Tbl_Hareketler WHERE OdaNo=? AND Durum='Aktif' ORDER BY ID DESC LIMIT 1", (r['OdaNo'],))
                 alt_yazi = h.iloc[0]['MusteriAdSoyad'] if not h.empty else "DOLU"
             elif r['Durum'] == "Kirli":
                 css_sinifi = "room-kirli"
@@ -297,7 +298,8 @@ elif st.session_state.sayfa == "GİRİŞ / ÇIKIŞ İŞLEMLERİ":
             st.markdown("##### 📤 Müşteri Çıkış / Hesap Kapatma")
             o = st.selectbox("🚪 Çıkış Yapacak Oda", df_d['OdaNo'])
             
-            h = db_sorgu("SELECT * FROM Tbl_Hareketler WHERE OdaNo=? AND Durum='Aktif'", (o,))
+            # 🛠️ GÜNCELLEME: Çıkışta da sadece AKTİF olan kaydı getir
+            h = db_sorgu("SELECT * FROM Tbl_Hareketler WHERE OdaNo=? AND Durum='Aktif' ORDER BY ID DESC LIMIT 1", (o,))
             if not h.empty:
                 r = h.iloc[0]
                 gece = gece_sayisi_hesapla(r['GirisTarihi'])
@@ -316,10 +318,11 @@ elif st.session_state.sayfa == "GİRİŞ / ÇIKIŞ İŞLEMLERİ":
                 
                 if st.form_submit_button("📤 Bakiyeyi Kapat ve Çıkışı Onayla", use_container_width=True):
                     db_komut("UPDATE Tbl_Hareketler SET ToplamTutar=?, OdenenTutar=OdenenTutar+?, KalanBorc=0, Durum='Tamamlandı' WHERE ID=?", (guncel_toplam, tah, r['ID']))
-                    db_komut("UPDATE Tbl_Odalar SET Durum='Kirli' WHERE OdaNo=?", (o,))
+                    db_komut("UPDATE Tbl_Odalar SET Durum='Boş' WHERE OdaNo=?", (o,))
+                    
                     if tah > 0: 
                         db_komut("INSERT INTO Tbl_Kasa (IslemTipi, Kategori, Tutar, OdemeYontemi, Aciklama, Tarih) VALUES ('Gelir', 'ODA GELİRİ', ?, ?, ?, ?)", (tah, yon, f"ODA {o} CHECK-OUT TAHSİLAT - {r['MusteriAdSoyad']}", datetime.now().strftime("%Y-%m-%d")))
-                    st.success("Çıkış yapıldı."); st.rerun()
+                    st.success(f"{o} Numaralı oda boşaltıldı ve doğrudan 'Boş (Müsait)' durumuna alındı."); st.rerun()
 
 # ==========================================
 # SAYFA 3: TAHSİLAT & BORÇ TAKİBİ
@@ -402,6 +405,29 @@ elif st.session_state.sayfa == "KASA YÖNETİMİ":
     
     st.markdown("<br>", unsafe_allow_html=True)
     
+    # 🛠️ GÜNCELLEME: Excel'e aktarma ve indirme butonu eklendi (Hata vermemesi için motor ayarlandı)
+    st.markdown("##### 📥 Kasa Raporunu Excel Olarak İndir")
+    if not df_k.empty:
+        try:
+            import io
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_k.to_excel(writer, index=False, sheet_name='Kasa_Raporu')
+            buffer.seek(0)
+            st.download_button(
+                label="📥 Excel Dosyasını Bilgisayara Yükle",
+                data=buffer,
+                file_name=f"kasa_raporu_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.error(f"Excel motoru eksik veya hata verdi. Lütfen terminalden 'pip install openpyxl' komutunu çalıştırın. Hata: {e}")
+    else:
+        st.info("Bu ay henüz kasada işlem bulunmuyor.")
+
+    st.markdown("---")
+
     with st.expander("🗑️ Hatalı / Yanlış Kasa İşlemini Sil", expanded=False):
         with st.form("kasa_silme_form"):
             silinecek_id = st.number_input("Silmek İstediğiniz İşlemin ID Numarası:", min_value=1, step=1)
@@ -450,7 +476,6 @@ elif st.session_state.sayfa == "PERSONEL & MAAŞ":
             df_gecici["CikisTarihi"] = "DEVAM EDİYOR"
             df_pl = df_gecici[["ID", "AdSoyad", "Gorev", "CalismaTuru", "GirisTarihi", "CikisTarihi", "NetMaas"]]
     
-    # 📌 PERSONEL EKLEME BÖLÜMÜ
     with st.expander("➕ Yeni Personel Tanımla", expanded=False):
         with st.form("hizli_p"):
             p_ad = st.text_input("Personel Adı Soyadı")
@@ -465,17 +490,14 @@ elif st.session_state.sayfa == "PERSONEL & MAAŞ":
                              (buyuk_harf_turkce(p_ad), buyuk_harf_turkce(p_gorev), p_tur, str(p_giris), p_maas))
                     st.success("Personel başarıyla eklendi."); st.rerun()
 
-    # 🛠️ YENİ EKLEME: HATALI GİRİŞ TARİHİ VE GÖREV DÜZELTME PANELİ
     if not df_pl.empty:
         with st.expander("⚙️ Hatalı Personel Bilgilerini Düzenle / Güncelle", expanded=False):
             with st.form("personel_duzenleme_form"):
                 st.info("💡 Bilgilerini veya giriş tarihini yanlış kaydettiğiniz personeli seçip buradan hızlıca düzenleyebilirsiniz.")
                 secilen_p_id = st.selectbox("Düzenlenecek Personel", df_pl['ID'], format_func=lambda x: df_pl[df_pl['ID']==x]['AdSoyad'].values[0])
                 
-                # Seçilen personelin mevcut bilgilerini formda varsayılan yapmak için çekiyoruz
                 p_satir = df_pl[df_pl['ID'] == secilen_p_id].iloc[0]
                 
-                # Giriş tarihi string ise date nesnesine çevirmeyi deniyoruz, hata verirse bugünü alıyoruz
                 try:
                     mevcut_giris_date = datetime.strptime(str(p_satir['GirisTarihi']), "%Y-%m-%d").date()
                 except:
@@ -496,7 +518,6 @@ elif st.session_state.sayfa == "PERSONEL & MAAŞ":
                              (buyuk_harf_turkce(yeni_p_gorev), str(yeni_p_giris), yeni_p_tur, yeni_p_maas, secilen_p_id))
                     st.success(f"🎉 {p_satir['AdSoyad']} isimli personelin kart bilgileri güncellendi."); st.rerun()
 
-    # 💵 MAAŞ / AVANS ÖDEME BÖLÜMÜ
     if not df_pl.empty:
         with st.form("maas_avans_odeme_form"):
             st.markdown("##### 💸 Ödeme Girişi (Maaş / Avans)")
